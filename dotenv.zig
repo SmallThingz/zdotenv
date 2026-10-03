@@ -249,7 +249,7 @@ pub const HashMap = struct {
         };
     }
 
-    fn getHFP(key: []const u8) std.meta.Tuple(&.{ u64, u8 }) {
+    fn getHFP(key: []const u8) @Tuple(&.{ u64, u8 }) {
         const h = std.hash_map.StringContext.hash(undefined, key);
         const fp: u8 = @intCast(h >> 56);
         return .{ h, if (fp == 0) 1 else fp };
@@ -350,8 +350,8 @@ pub const ComptimeEnvType = struct {
     pub const Bucket = struct {
         key_idx: KeyIdxType,
         key_len: KeyLenType,
-        const KeyIdxType = std.meta.Int(.unsigned, @min(@bitSizeOf(usize), 40));
-        const KeyLenType = std.meta.Int(.unsigned, if (@bitSizeOf(usize) < 40) @bitSizeOf(usize) else 24);
+        const KeyIdxType = @Int(.unsigned, @min(@bitSizeOf(usize), 40));
+        const KeyLenType = @Int(.unsigned, if (@bitSizeOf(usize) < 40) @bitSizeOf(usize) else 24);
     };
 
     /// key+value strings concatenated together
@@ -705,7 +705,7 @@ pub fn GetParser(options: ParseOptions) type {
             self.skipUpto('\n');
             options.log_fn(":{d}:{d}\n{s}\n", .{ self.line, at - self.line_start, self.map.keys_string[self.line_start..self.at] });
             if (@inComptime()) {
-                options.log_fn((" " ** @as(usize, at - self.line_start - 1)) ++ "^\n", .{});
+                options.log_fn(@as([at - self.line_start - 1]u8, @splat(' ')) ++ "^\n", .{});
             } else {
                 for (1..at - self.line_start) |_| {
                     options.log_fn(" ", .{});
@@ -997,16 +997,16 @@ fn ArgsTuple(comptime Function: type) ?type {
     if (info != .@"fn") @compileError("ArgsTuple expects a function type");
 
     const function_info = info.@"fn";
-    if (function_info.is_var_args) return null;
+    if (function_info.attrs.varargs) return null;
 
-    var argument_field_list: [function_info.params.len]type = undefined;
-    inline for (function_info.params, 0..) |arg, i| {
-        const T = arg.type orelse return null;
+    var argument_field_list: [function_info.param_types.len]type = undefined;
+    inline for (function_info.param_types, 0..) |arg, i| {
+        const T = arg orelse return null;
         if (T == type or @typeInfo(T) == .@"fn") return null;
         argument_field_list[i] = T;
     }
 
-    return std.meta.Tuple(&argument_field_list);
+    return @Tuple(&argument_field_list);
 }
 
 fn initType(comptime T: type) T {
@@ -1023,26 +1023,26 @@ fn initType(comptime T: type) T {
         .array => |ai| inline for (0..ai.len) |i| {
             retval[i] = initType(ai.child);
         },
-        .@"struct" => |si| inline for (si.fields) |field| {
-            @field(retval, field.name) = if (field.defaultValue()) |v| v else comptime initType(@FieldType(T, field.name));
+        .@"struct" => |si| inline for (si.field_names, si.field_types, si.field_attrs) |name, Field, attrs| {
+            @field(retval, name) = if (attrs.defaultValue(Field)) |v| v else comptime initType(Field);
         },
         .comptime_float => return 0.0,
         .comptime_int => return 0,
         .undefined => unreachable,
         .null, .optional => return null,
         .error_union => |eu| return initType(eu.payload),
-        .error_set => |es_| if (es_) |es| {
+        .error_set => |es_| if (es_.error_names) |es| {
             if (es.len == 0) return undefined;
-            return @field(T, es[0].name);
+            return @field(T, es[0]);
         } else error.AnyError,
-        .@"enum" => |ei| if (ei.fields.len != 0) {
-            retval = @field(T, ei.fields[0].name);
+        .@"enum" => |ei| if (ei.field_names.len != 0) {
+            retval = @field(T, ei.field_names[0]);
         } else return undefined,
-        .@"union" => |ui| if (ui.fields.len != 0) {
-            retval = @unionInit(T, ui.fields[0].name, initType(ui.fields[0].type));
+        .@"union" => |ui| if (ui.field_names.len != 0) {
+            retval = @unionInit(T, ui.field_names[0], initType(ui.field_types[0]));
         },
         .@"fn" => return undefined,
-        .@"opaque", .frame, .@"anyframe" => unreachable,
+        .@"opaque", .frame, .@"anyframe", .spirv => unreachable,
         .vector => |vi| inline for (vi.len) |i| {
             @field(retval, i) = initType(vi.child);
         },
@@ -1055,12 +1055,12 @@ fn initType(comptime T: type) T {
 /// Even this touches the translated parts of the c code that we touch, but atleast not it doesn't crash
 fn refAllDeclsRecursive(comptime T: type) void {
     inline for (comptime std.meta.declarations(T)) |decl| {
-        const field = @field(T, decl.name);
+        const field = @field(T, decl);
         _ = &field;
 
         if (@TypeOf(field) == type) {
-            switch (@typeInfo(@field(T, decl.name))) {
-                .@"struct", .@"enum", .@"union", .@"opaque" => refAllDeclsRecursive(@field(T, decl.name)),
+            switch (@typeInfo(@field(T, decl))) {
+                .@"struct", .@"enum", .@"union", .@"opaque" => refAllDeclsRecursive(@field(T, decl)),
                 else => {},
             }
         } else if (@typeInfo(@TypeOf(field)) == .@"fn") {
@@ -1160,18 +1160,18 @@ test "runTests(true)" {
 }
 
 fn runTests(comptime in_comptime: bool, comptime T: type) void {
-    inline for (@typeInfo(T).@"struct".decls) |f| {
+    inline for (@typeInfo(T).@"struct".decl_names) |f| {
         _ = struct {
             test {
                 if (!in_comptime) {
-                    @field(T, f.name)() catch |e| {
-                        std.debug.print("TEST FAILED: {s}\n", .{f.name});
+                    @field(T, f)() catch |e| {
+                        std.debug.print("TEST FAILED: {s}\n", .{f});
                         return e;
                     };
                 } else {
                     comptime {
-                        @field(T, f.name)() catch |e| {
-                            @compileError(std.fmt.comptimePrint("TEST \"{s}\": {any}\n", .{ f.name, e }));
+                        @field(T, f)() catch |e| {
+                            @compileError(std.fmt.comptimePrint("TEST \"{s}\": {any}\n", .{ f, e }));
                         };
                     }
                 }
