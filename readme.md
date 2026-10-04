@@ -1,6 +1,6 @@
 # dotenv
 Load ENV vars from `.env` file at runtime or comptime. As fast as my brain could handle.
-Tested with `0.16.0`, other versions may work as well. The `0.15` tag preserves the Zig 0.15-compatible release.
+Tested with `0.17.0`, other versions may work as well. The `0.15` tag preserves the Zig 0.15-compatible release.
 
 This library provides functions for loading environment variables from `.env` files at runtime.
 It supports unquoting and unescaping of string values (including substitutions like `${VAR}`), comments, multiline values, and flexible customization via `ParseOptions`.
